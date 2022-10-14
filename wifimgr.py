@@ -1,13 +1,21 @@
+from plistlib import PlistFormat
 import network
 import socket
 import ure
 import time
+import machine
+from sys import platform
+from esp_micro.config_loader import read_profiles
+from esp_micro.config_loader import write_profiles
+from esp_micro.config_loader import write_mqtt
+
+NETWORK_PROFILES = 'wifi.dat'
+
+RP2 = platform == 'rp2'
 
 ap_ssid = "WifiManager"
 ap_password = "tayfunulu"
 ap_authmode = 3  # WPA2
-
-NETWORK_PROFILES = 'wifi.dat'
 
 wlan_ap = network.WLAN(network.AP_IF)
 wlan_sta = network.WLAN(network.STA_IF)
@@ -31,24 +39,25 @@ def get_connection():
 
         # Read known network profiles from file
         profiles = read_profiles()
+        #profiles = {}
 
         # Search WiFis in range
         wlan_sta.active(True)
         networks = wlan_sta.scan()
 
-        AUTHMODE = {0: "open", 1: "WEP", 2: "WPA-PSK", 3: "WPA2-PSK", 4: "WPA/WPA2-PSK"}
+        AUTHMODE = {0: "open", 1: "WEP", 2: "WPA-PSK",
+                    3: "WPA2-PSK", 4: "WPA/WPA2-PSK"}
         for ssid, bssid, channel, rssi, authmode, hidden in sorted(networks, key=lambda x: x[3], reverse=True):
             ssid = ssid.decode('utf-8')
             encrypted = authmode > 0
-            print("ssid: %s chan: %d rssi: %d authmode: %s" % (ssid, channel, rssi, AUTHMODE.get(authmode, '?')))
+            print("ssid: %s chan: %d rssi: %d authmode: %s" %
+                  (ssid, channel, rssi, AUTHMODE.get(authmode, '?')))
             if encrypted:
                 if ssid in profiles:
                     password = profiles[ssid]
                     connected = do_connect(ssid, password)
                 else:
                     print("skipping unknown encrypted network")
-            else:  # open
-                connected = do_connect(ssid, None)
             if connected:
                 break
 
@@ -62,29 +71,11 @@ def get_connection():
     return wlan_sta if connected else None
 
 
-def read_profiles():
-    with open(NETWORK_PROFILES) as f:
-        lines = f.readlines()
-    profiles = {}
-    for line in lines:
-        ssid, password = line.strip("\n").split(";")
-        profiles[ssid] = password
-    return profiles
-
-
-def write_profiles(profiles):
-    lines = []
-    for ssid, password in profiles.items():
-        lines.append("%s;%s\n" % (ssid, password))
-    with open(NETWORK_PROFILES, "w") as f:
-        f.write(''.join(lines))
-
-
 def do_connect(ssid, password):
     wlan_sta.active(True)
     if wlan_sta.isconnected():
         return None
-    print('Trying to connect to %s...' % ssid)
+    print('Trying to connect to %s(%s)...' % (ssid, password))
     wlan_sta.connect(ssid, password)
     for retry in range(100):
         connected = wlan_sta.isconnected()
@@ -99,11 +90,11 @@ def do_connect(ssid, password):
     return connected
 
 
-def send_header(client, status_code=200, content_length=None ):
+def send_header(client, status_code=200, content_length=None):
     client.sendall("HTTP/1.0 {} OK\r\n".format(status_code))
     client.sendall("Content-Type: text/html\r\n")
     if content_length is not None:
-      client.sendall("Content-Length: {}\r\n".format(content_length))
+        client.sendall("Content-Length: {}\r\n".format(content_length))
     client.sendall("\r\n")
 
 
@@ -144,6 +135,30 @@ def handle_root(client):
                             <td>Password:</td>
                             <td><input name="password" type="password" /></td>
                         </tr>
+                        <tr>
+                            <td>MQTT server:</td>
+                            <td><input name="mqttServer" type="text" /></td>
+                        </tr>
+                        <tr>
+                            <td>MQTT user:</td>
+                            <td><input name="mqttUser" type="text" /></td>
+                        </tr>
+                        <tr>
+                            <td>MQTT password:</td>
+                            <td><input name="mqttPassword" type="password" /></td>
+                        </tr>
+                        <tr>
+                            <td>Github Repo:</td>
+                            <td><input name="githubRepo" type="text" /></td>
+                        </tr>
+                        <tr>
+                            <td>install new versions automatically</td>
+                            <td><input type="checkbox" id="autoUpdate" name="autoUpdate" checked></td>
+                        </tr>
+                        <tr>
+                            <td>install development versions</td>
+                            <td><input type="checkbox" id="unstableVersions" name="unstableVersions"></td>
+                        </tr>
                     </tbody>
                 </table>
                 <p style="text-align: center;">
@@ -179,15 +194,39 @@ def handle_root(client):
 
 
 def handle_configure(client, request):
-    match = ure.search("ssid=([^&]*)&password=(.*)", request)
+    match = ure.search(
+        "ssid=([^&]*)&password=([^&]*)&mqttServer=([^&]*)&mqttUser=([^&]*)&mqttPassword=([^&]*)&githubRepo=([^&]*)(.*)", request)
 
     if match is None:
         send_response(client, "Parameters not found", status_code=400)
         return False
     # version 1.9 compatibility
     try:
-        ssid = match.group(1).decode("utf-8").replace("%3F", "?").replace("%21", "!")
-        password = match.group(2).decode("utf-8").replace("%3F", "?").replace("%21", "!")
+        ssid = match.group(1).decode(
+            "utf-8").replace("%3F", "?").replace("%21", "!")
+        password = match.group(2).decode(
+            "utf-8").replace("%3F", "?").replace("%21", "!")
+        mqttServer = match.group(3).decode(
+            "utf-8").replace("%3F", "?").replace("%21", "!")
+        mqttUser = match.group(4).decode(
+            "utf-8").replace("%3F", "?").replace("%21", "!")
+        mqttPassword = match.group(5).decode(
+            "utf-8").replace("%3F", "?").replace("%21", "!")
+        githubRepo = match.group(6).decode(
+            "utf-8").replace("%3F", "?").replace("%21", "!").replace("%3A", ":").replace("%2F", "/")
+        rest = match.group(7).decode(
+            "utf-8").replace("%3F", "?").replace("%21", "!")
+        autoUpdate = "autoUpdate" in rest
+        unstableVersions = "unstableVersions" in rest
+
+        print('mqttServer: ' + mqttServer)
+        print('mqttUser: ' + mqttUser)
+        print('mqttPassword: ' + mqttPassword)
+        if autoUpdate:
+            print('autoUpdate!')
+        if unstableVersions:
+            print('unstableVersions!')
+
     except Exception:
         ssid = match.group(1).replace("%3F", "?").replace("%21", "!")
         password = match.group(2).replace("%3F", "?").replace("%21", "!")
@@ -217,9 +256,12 @@ def handle_configure(client, request):
             profiles = {}
         profiles[ssid] = password
         write_profiles(profiles)
+        write_mqtt(mqttServer, mqttUser, mqttPassword,
+                   githubRepo, autoUpdate, unstableVersions)
 
         time.sleep(5)
 
+        machine.reset()
         return True
     else:
         response = """\
@@ -260,16 +302,21 @@ def start(port=80):
 
     stop()
 
+    if RP2:
+        wlan_ap.config(essid=ap_ssid, password=ap_password)
+    else:
+        wlan_ap.config(essid=ap_ssid, password=ap_password,
+                       authmode=ap_authmode)
+
     wlan_sta.active(True)
     wlan_ap.active(True)
-
-    wlan_ap.config(essid=ap_ssid, password=ap_password, authmode=ap_authmode)
 
     server_socket = socket.socket()
     server_socket.bind(addr)
     server_socket.listen(1)
 
-    print('Connect to WiFi ssid ' + ap_ssid + ', default password: ' + ap_password)
+    print('Connect to WiFi ssid ' + ap_ssid +
+          ', default password: ' + ap_password)
     print('and access the ESP via your favorite web browser at 192.168.4.1.')
     print('Listening on:', addr)
 
@@ -295,9 +342,11 @@ def start(port=80):
 
             # version 1.9 compatibility
             try:
-                url = ure.search("(?:GET|POST) /(.*?)(?:\\?.*?)? HTTP", request).group(1).decode("utf-8").rstrip("/")
+                url = ure.search("(?:GET|POST) /(.*?)(?:\\?.*?)? HTTP",
+                                 request).group(1).decode("utf-8").rstrip("/")
             except Exception:
-                url = ure.search("(?:GET|POST) /(.*?)(?:\\?.*?)? HTTP", request).group(1).rstrip("/")
+                url = ure.search(
+                    "(?:GET|POST) /(.*?)(?:\\?.*?)? HTTP", request).group(1).rstrip("/")
             print("URL is {}".format(url))
 
             if url == "":
