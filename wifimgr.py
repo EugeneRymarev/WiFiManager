@@ -1,4 +1,3 @@
-from plistlib import PlistFormat
 import network
 import socket
 import ure
