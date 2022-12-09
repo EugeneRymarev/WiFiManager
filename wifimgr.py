@@ -1,72 +1,60 @@
+# original repository https://github.com/tayfunulu/WiFiManager
+import machine
 import network
 import socket
-import ure
 import time
-import machine
+import ubinascii
+import ure
 from sys import platform
 from esp_micro.config_loader import read_profiles
 from esp_micro.config_loader import write_profiles
 from esp_micro.config_loader import write_mqtt
 
 NETWORK_PROFILES = 'wifi.dat'
-
 RP2 = platform == 'rp2'
-
-ap_ssid = "WifiManager"
-ap_password = "tayfunulu"
-ap_authmode = 3  # WPA2
-
+AUTH_MODE = {0: 'open', 1: 'WEP', 2: 'WPA-PSK', 3: 'WPA2-PSK', 4: 'WPA/WPA2-PSK'}
+unique_id = ubinascii.hexlify(machine.unique_id()).decode('utf-8')
+ap_ssid = f'WifiManager_{unique_id}'
+ap_password = 'admin'
+ap_auth_mode = 3  # WPA2
 wlan_ap = network.WLAN(network.AP_IF)
 wlan_sta = network.WLAN(network.STA_IF)
-
 server_socket = None
 
 
 def get_connection():
-    """return a working WLAN(STA_IF) instance or None"""
-
-    # First check if there already is any connection:
+    """Return a working WLAN(STA_IF) instance or None"""
+    # First check if there is already any connection:
     if wlan_sta.isconnected():
         return wlan_sta
-
     connected = False
     try:
-        # ESP connecting to WiFi takes time, wait a bit and try again:
+        # ESP connecting to Wi-Fi takes time, wait for a bit and try again:
         time.sleep(3)
         if wlan_sta.isconnected():
             return wlan_sta
-
         # Read known network profiles from file
         profiles = read_profiles()
-        #profiles = {}
-
-        # Search WiFis in range
+        # Search Wi-Fis in range
         wlan_sta.active(True)
         networks = wlan_sta.scan()
-
-        AUTHMODE = {0: "open", 1: "WEP", 2: "WPA-PSK",
-                    3: "WPA2-PSK", 4: "WPA/WPA2-PSK"}
-        for ssid, bssid, channel, rssi, authmode, hidden in sorted(networks, key=lambda x: x[3], reverse=True):
+        for ssid, bssid, channel, rssi, auth_mode, hidden in sorted(networks, key=lambda x: x[3], reverse=True):
             ssid = ssid.decode('utf-8')
-            encrypted = authmode > 0
-            print("ssid: %s chan: %d rssi: %d authmode: %s" %
-                  (ssid, channel, rssi, AUTHMODE.get(authmode, '?')))
+            encrypted = auth_mode > 0
+            print(f'''ssid: {ssid} chan: {channel} rssi: {rssi} authmode: {AUTH_MODE.get(auth_mode, '?')}''')
             if encrypted:
                 if ssid in profiles:
                     password = profiles[ssid]
                     connected = do_connect(ssid, password)
                 else:
-                    print("skipping unknown encrypted network")
+                    print('skipping unknown encrypted network')
             if connected:
                 break
-
     except OSError as e:
-        print("exception", str(e))
-
+        print(f'exception: {e}')
     # start web server for connection manager:
     if not connected:
         connected = start()
-
     return wlan_sta if connected else None
 
 
@@ -74,8 +62,9 @@ def do_connect(ssid, password):
     wlan_sta.active(True)
     if wlan_sta.isconnected():
         return None
-    print('Trying to connect to %s(%s)...' % (ssid, password))
+    print(f'Trying to connect to {ssid}({password})...')
     wlan_sta.connect(ssid, password)
+    connected = None
     for retry in range(100):
         connected = wlan_sta.isconnected()
         if connected:
@@ -83,18 +72,18 @@ def do_connect(ssid, password):
         time.sleep(0.1)
         print('.', end='')
     if connected:
-        print('\nConnected. Network config: ', wlan_sta.ifconfig())
+        print(f'\nConnected. Network config: {wlan_sta.ifconfig()}')
     else:
-        print('\nFailed. Not Connected to: ' + ssid)
+        print(f'\nFailed. Not Connected to: {ssid}')
     return connected
 
 
 def send_header(client, status_code=200, content_length=None):
-    client.sendall("HTTP/1.0 {} OK\r\n".format(status_code))
-    client.sendall("Content-Type: text/html\r\n")
+    client.sendall(f'HTTP/1.0 {status_code} OK\r\n')
+    client.sendall('Content-Type: text/html\r\n')
     if content_length is not None:
-        client.sendall("Content-Length: {}\r\n".format(content_length))
-    client.sendall("\r\n")
+        client.sendall(f'Content-Length: {content_length}\r\n')
+    client.sendall('\r\n')
 
 
 def send_response(client, payload, status_code=200):
@@ -109,7 +98,7 @@ def handle_root(client):
     wlan_sta.active(True)
     ssids = sorted(ssid.decode('utf-8') for ssid, *_ in wlan_sta.scan())
     send_header(client)
-    client.sendall("""\
+    client.sendall('''\
         <html>
             <h1 style="color: #5e9ca0; text-align: center;">
                 <span style="color: #ff0000;">
@@ -119,17 +108,17 @@ def handle_root(client):
             <form action="configure" method="post">
                 <table style="margin-left: auto; margin-right: auto;">
                     <tbody>
-    """)
+    ''')
     while len(ssids):
         ssid = ssids.pop(0)
-        client.sendall("""\
+        client.sendall(f'''
                         <tr>
                             <td colspan="2">
-                                <input type="radio" name="ssid" value="{0}" />{0}
+                                <input type="radio" name="ssid" value="{ssid}" />{ssid}
                             </td>
                         </tr>
-        """.format(ssid))
-    client.sendall("""\
+        ''')
+    client.sendall(f'''
                         <tr>
                             <td>Password:</td>
                             <td><input name="password" type="password" /></td>
@@ -169,7 +158,7 @@ def handle_root(client):
             <h5>
                 <span style="color: #ff0000;">
                     Your ssid and password information will be saved into the
-                    "%(filename)s" file in your ESP module for future usage.
+                    "{NETWORK_PROFILES}" file in your ESP module for future usage.
                     Be careful about security!
                 </span>
             </h5>
@@ -183,71 +172,75 @@ def handle_root(client):
                         target="_blank" rel="noopener">cpopp/MicroPythonSamples</a>.
                 </li>
                 <li>
-                    This code available at <a href="https://github.com/tayfunulu/WiFiManager"
-                        target="_blank" rel="noopener">tayfunulu/WiFiManager</a>.
+                    This code available at <a href="https://github.com/EugeneRymarev/WiFiManager"
+                        target="_blank" rel="noopener">EugeneRymarev/WiFiManager</a>.
                 </li>
             </ul>
         </html>
-    """ % dict(filename=NETWORK_PROFILES))
+    ''')
     client.close()
 
 
 def handle_configure(client, request):
-    match = ure.search(
-        "ssid=([^&]*)&password=([^&]*)&mqttServer=([^&]*)&mqttUser=([^&]*)&mqttPassword=([^&]*)&githubRepo=([^&]*)(.*)", request)
+    def replace_marks(s):
+        return s.replace('%3F', '?').replace('%21', '!')
 
+    def decode_utf_8(s):
+        return s.decode('utf-8')
+
+    def decode_and_replace(s):
+        return replace_marks(decode_utf_8(s))
+
+    regexp = \
+        'ssid=([^&]*)&password=([^&]*)&mqttServer=([^&]*)&mqttUser=([^&]*)&mqttPassword=([^&]*)&githubRepo=([^&]*)(.*)'
+    match = ure.search(regexp, request)
     if match is None:
-        send_response(client, "Parameters not found", status_code=400)
+        send_response(client, 'Parameters not found', status_code=400)
         return False
     # version 1.9 compatibility
+    mqtt_server = None
+    mqtt_user = None
+    mqtt_password = None
+    github_repo = None
+    auto_update = None
+    unstable_versions = None
     try:
-        ssid = match.group(1).decode(
-            "utf-8").replace("%3F", "?").replace("%21", "!")
-        password = match.group(2).decode(
-            "utf-8").replace("%3F", "?").replace("%21", "!")
-        mqttServer = match.group(3).decode(
-            "utf-8").replace("%3F", "?").replace("%21", "!")
-        mqttUser = match.group(4).decode(
-            "utf-8").replace("%3F", "?").replace("%21", "!")
-        mqttPassword = match.group(5).decode(
-            "utf-8").replace("%3F", "?").replace("%21", "!")
-        githubRepo = match.group(6).decode(
-            "utf-8").replace("%3F", "?").replace("%21", "!").replace("%3A", ":").replace("%2F", "/")
-        rest = match.group(7).decode(
-            "utf-8").replace("%3F", "?").replace("%21", "!")
-        autoUpdate = "autoUpdate" in rest
-        unstableVersions = "unstableVersions" in rest
-
-        print('mqttServer: ' + mqttServer)
-        print('mqttUser: ' + mqttUser)
-        print('mqttPassword: ' + mqttPassword)
-        if autoUpdate:
+        ssid = decode_and_replace(match.group(1))
+        password = decode_and_replace(match.group(2))
+        mqtt_server = decode_and_replace(match.group(3))
+        mqtt_user = decode_and_replace(match.group(4))
+        mqtt_password = decode_and_replace(match.group(5))
+        github_repo = decode_and_replace(match.group(6)).replace('%3A', ':').replace('%2F', '/')
+        rest = decode_and_replace(match.group(7))
+        auto_update = 'autoUpdate' in rest
+        unstable_versions = 'unstableVersions' in rest
+        print(f'mqttServer: {mqtt_server}')
+        print(f'mqttUser: {mqtt_user}')
+        print(f'mqttPassword: {mqtt_password}')
+        if auto_update:
             print('autoUpdate!')
-        if unstableVersions:
+        if unstable_versions:
             print('unstableVersions!')
-
     except Exception:
-        ssid = match.group(1).replace("%3F", "?").replace("%21", "!")
-        password = match.group(2).replace("%3F", "?").replace("%21", "!")
-
+        ssid = replace_marks(match.group(1))
+        password = replace_marks(match.group(2))
     if len(ssid) == 0:
-        send_response(client, "SSID must be provided", status_code=400)
+        send_response(client, 'SSID must be provided', status_code=400)
         return False
-
     if do_connect(ssid, password):
-        response = """\
+        response = f'''
             <html>
                 <center>
                     <br><br>
                     <h1 style="color: #5e9ca0; text-align: center;">
                         <span style="color: #ff0000;">
-                            ESP successfully connected to WiFi network %(ssid)s.
+                            ESP successfully connected to WiFi network {ssid}.
                         </span>
                     </h1>
                     <br><br>
                 </center>
             </html>
-        """ % dict(ssid=ssid)
+        '''
         send_response(client, response)
         try:
             profiles = read_profiles()
@@ -255,20 +248,17 @@ def handle_configure(client, request):
             profiles = {}
         profiles[ssid] = password
         write_profiles(profiles)
-        write_mqtt(mqttServer, mqttUser, mqttPassword,
-                   githubRepo, autoUpdate, unstableVersions)
-
+        write_mqtt(mqtt_server, mqtt_user, mqtt_password, github_repo, auto_update, unstable_versions)
         time.sleep(5)
-
         machine.reset()
         return True
     else:
-        response = """\
+        response = f'''
             <html>
                 <center>
                     <h1 style="color: #5e9ca0; text-align: center;">
                         <span style="color: #ff0000;">
-                            ESP could not connect to WiFi network %(ssid)s.
+                            ESP could not connect to WiFi network {ssid}.
                         </span>
                     </h1>
                     <br><br>
@@ -277,18 +267,17 @@ def handle_configure(client, request):
                     </form>
                 </center>
             </html>
-        """ % dict(ssid=ssid)
+        '''
         send_response(client, response)
         return False
 
 
 def handle_not_found(client, url):
-    send_response(client, "Path not found: {}".format(url), status_code=404)
+    send_response(client, f'Path not found: {url}', status_code=404)
 
 
 def stop():
     global server_socket
-
     if server_socket:
         server_socket.close()
         server_socket = None
@@ -296,64 +285,49 @@ def stop():
 
 def start(port=80):
     global server_socket
-
     addr = socket.getaddrinfo('0.0.0.0', port)[0][-1]
-
     stop()
-
     if RP2:
         wlan_ap.config(essid=ap_ssid, password=ap_password)
     else:
-        wlan_ap.config(essid=ap_ssid, password=ap_password,
-                       authmode=ap_authmode)
-
+        wlan_ap.config(essid=ap_ssid, password=ap_password, authmode=ap_auth_mode)
     wlan_sta.active(True)
     wlan_ap.active(True)
-
     server_socket = socket.socket()
     server_socket.bind(addr)
     server_socket.listen(1)
-
-    print('Connect to WiFi ssid ' + ap_ssid +
-          ', default password: ' + ap_password)
+    print(f'Connect to WiFi ssid {ap_ssid}, default password: {ap_password}')
     print('and access the ESP via your favorite web browser at 192.168.4.1.')
-    print('Listening on:', addr)
-
+    print(f'Listening on: {addr}')
     while True:
         if wlan_sta.isconnected():
             return True
-
         client, addr = server_socket.accept()
-        print('client connected from', addr)
+        print(f'client connected from {addr}')
         try:
             client.settimeout(5.0)
-
-            request = b""
+            request = b''
             try:
-                while "\r\n\r\n" not in request:
+                while '\r\n\r\n' not in request:
                     request += client.recv(512)
             except OSError:
                 pass
-
-            print("Request is: {}".format(request))
-            if "HTTP" not in request:  # skip invalid requests
+            print(f'Request is: {request}')
+            if 'HTTP' not in request:  # skip invalid requests
                 continue
-
             # version 1.9 compatibility
             try:
-                url = ure.search("(?:GET|POST) /(.*?)(?:\\?.*?)? HTTP",
-                                 request).group(1).decode("utf-8").rstrip("/")
+                regexp = '(?:GET|POST) /(.*?)(?:\\?.*?)? HTTP'
+                url = ure.search(regexp, request).group(1).decode('utf-8').rstrip('/')
             except Exception:
-                url = ure.search(
-                    "(?:GET|POST) /(.*?)(?:\\?.*?)? HTTP", request).group(1).rstrip("/")
-            print("URL is {}".format(url))
-
-            if url == "":
+                regexp = '(?:GET|POST) /(.*?)(?:\\?.*?)? HTTP'
+                url = ure.search(regexp, request).group(1).rstrip('/')
+            print(f'URL is {url}')
+            if url == '':
                 handle_root(client)
-            elif url == "configure":
+            elif url == 'configure':
                 handle_configure(client, request)
             else:
                 handle_not_found(client, url)
-
         finally:
             client.close()
